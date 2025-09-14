@@ -1,0 +1,93 @@
+//@version=6
+indicator("Donchian Breakout + Volatility Filter [ToucanLabs]", overlay=true)
+
+//========================= Inputs
+donchLen     = input.int(20,  "Donchian Length", minval=2, tooltip="Lookback window for channel high/low")
+atrLen       = input.int(10,  "ATR Length",      minval=1, tooltip="ATR period for volatility filter")
+minAtrPct    = input.float(0.1, "Min ATR% (vol filter)", step=0.05, tooltip="Minimum ATR as % of price to validate breakouts")
+useVolFilter = input.bool(true, "Use Volatility Filter (ATR%)")
+signalMode   = input.string("Cross", "Entry Trigger", options=["Cross","CloseBeyond"], tooltip="Cross: only on cross events. CloseBeyond: when close is beyond the band.")
+showLabels   = input.bool(true, "Show Signal Labels")
+showDebug    = input.bool(false, "Show Debug Markers")
+
+//========================= Donchian (shifted to avoid repaint)
+upperRaw = ta.highest(high, donchLen)
+lowerRaw = ta.lowest(low,  donchLen)
+upper    = upperRaw[1]
+lower    = lowerRaw[1]
+basis    = (upper + lower) / 2.0
+
+//========================= Volatility filter (ATR%)
+atr    = ta.atr(atrLen)
+atrPct = atr / close * 100.0
+volOK  = atrPct >= minAtrPct
+volCond = (not useVolFilter) or volOK
+
+//========================= Signals (bar close only)
+// Compute cross events unconditionally (avoid local short-circuit with history-dependent functions)
+crossUpUpper    = ta.crossover(close, upper)
+crossDownLower  = ta.crossunder(close, lower)
+crossDownUpper  = ta.crossunder(close, upper)
+crossUpLower    = ta.crossover(close, lower)
+
+// Stateful entries/exits to avoid repeated labels and orphan exits
+var bool inLong  = false
+var bool inShort = false
+
+// Entry triggers (raw) based on mode
+entryTrigLongRaw  = signalMode == "Cross" ? crossUpUpper   : (close > upper)
+entryTrigShortRaw = signalMode == "Cross" ? crossDownLower : (close < lower)
+
+// Entries only when flat and filters are ok
+entryLong  = volCond and entryTrigLongRaw  and not inLong and not inShort
+entryShort = volCond and entryTrigShortRaw and not inLong and not inShort
+
+// Exits only when in position: cross back into channel or opposite raw trigger
+exitLong  = inLong  and (crossDownUpper or entryTrigShortRaw)
+exitShort = inShort and (crossUpLower  or entryTrigLongRaw)
+
+// Update position state
+if entryLong
+    inLong  := true
+    inShort := false
+if entryShort
+    inShort := true
+    inLong  := false
+if exitLong
+    inLong  := false
+if exitShort
+    inShort := false
+
+//========================= Plots
+plot(upper, "Donchian High",  linewidth=1)
+plot(lower, "Donchian Low",   linewidth=1)
+plot(basis, "Donchian Mid",   linewidth=1, style=plot.style_circles)
+ph = plot(upper, display=display.none)
+pl = plot(lower, display=display.none)
+fill(ph, pl, title="Channel Fill", color=color.new(color.teal, 85))
+
+//========================= Labels (optional)
+if showLabels and entryLong
+    label.new(bar_index, low,  text="▲ Long",      style=label.style_label_up,   yloc=yloc.belowbar, textcolor=color.white)
+if showLabels and entryShort
+    label.new(bar_index, high, text="▼ Short",     style=label.style_label_down, yloc=yloc.abovebar, textcolor=color.white)
+if showLabels and exitLong
+    label.new(bar_index, high, text="× Exit Long", style=label.style_label_left, yloc=yloc.abovebar, textcolor=color.white)
+if showLabels and exitShort
+    label.new(bar_index, low,  text="× Exit Short",style=label.style_label_right,yloc=yloc.belowbar, textcolor=color.white)
+
+//========================= Debug markers (optional) — global scope
+plotshape(showDebug and crossUpUpper,                 title="CrossUpUpper",    style=shape.triangleup,   location=location.belowbar, color=color.new(color.lime, 0),   size=size.tiny, text="crUpU")
+plotshape(showDebug and crossDownLower,               title="CrossDownLower",  style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),    size=size.tiny, text="crDnL")
+plotshape(showDebug and useVolFilter and (not volOK), title="VolFail",         style=shape.xcross,       location=location.bottom,   color=color.new(color.orange,0), size=size.tiny, text="ATR✖")
+
+//========================= Alerts (static messages with placeholders)
+alertcondition(entryLong,  "TL_LONG_ENTRY",  "Long: {{ticker}} @ {{close}}")
+alertcondition(entryShort, "TL_SHORT_ENTRY", "Short: {{ticker}} @ {{close}}")
+alertcondition(exitLong,   "TL_EXIT_LONG",   "Exit Long: {{ticker}} @ {{close}}")
+alertcondition(exitShort,  "TL_EXIT_SHORT",  "Exit Short: {{ticker}} @ {{close}}")
+
+//========================= Notes
+// - No repaint: bands use [1] shift; signals on bar close.
+// - Use the strategy() version for in-chart backtesting and SL/TP management.
+// - ToucanLabs: https://www.toucanlab.com
