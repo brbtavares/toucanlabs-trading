@@ -1,0 +1,85 @@
+//@version=6
+indicator("MTF No-Repaint Template [ToucanLabs]", overlay=true)
+
+// ------------------------------------------------------------
+// PURPOSE
+// Safe MTF pattern (no repaint): higher-timeframe (HTF) series
+// is updated ONLY when the HTF bar is CONFIRMED. Includes a
+// simple LTF signal (EMA / FIR demo) and example alerts.
+// ------------------------------------------------------------
+
+// ----------------------------- Inputs
+htf_tf      = input.timeframe("60", "Higher Timeframe (HTF)")
+htf_len     = input.int(50, "HTF EMA Length", minval=1)
+use_htf_gate= input.bool(true, "Gate signals by HTF (trend filter)")
+
+sig_mode    = input.string("EMA", "LTF Signal Mode", options=["EMA","FIR5"])
+lt_ema_len  = input.int(20, "LTF EMA Length", minval=1, tooltip="Used when LTF mode = EMA")
+
+show_labels = input.bool(true, "Show Signal Labels")
+
+// ----------------------------- LTF signal (demo)
+// Option 1: EMA
+float ltf_sig_ema = ta.ema(close, lt_ema_len)
+
+// Option 2: Minimal causal FIR(5) demo (fixed coefficients)
+// y[t] = c0*x[t] + c1*x[t-1] + ... + c4*x[t-4]
+float c0 = 0.10, c1 = 0.20, c2 = 0.40, c3 = 0.20, c4 = 0.10
+float ltf_sig_fir = c0*close + c1*close[1] + c2*close[2] + c3*close[3] + c4*close[4]
+
+float ltf_sig = sig_mode == "EMA" ? ltf_sig_ema : ltf_sig_fir
+
+// ----------------------------- SAFE MTF BLOCK (no repaint)
+var float htf_ema_locked = na
+
+// Pull both the HTF EMA and whether that HTF bar is confirmed.
+// We set lookahead OFF and gaps OFF to avoid future-leakage.
+[htf_ema_raw, htf_is_confirmed] = request.security(
+     syminfo.tickerid, htf_tf,
+     [ta.ema(close, htf_len), barstate.isconfirmed],
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+// Update the locked value ONLY at the close of the HTF bar
+if htf_is_confirmed
+    htf_ema_locked := htf_ema_raw
+
+// ----------------------------- Signals (demo)
+// Use HTF trend as a gate; example: long only if close > HTF EMA
+bool htf_trend_up   = not na(htf_ema_locked) and close > htf_ema_locked
+bool htf_trend_down = not na(htf_ema_locked) and close < htf_ema_locked
+
+// Cross of LTF signal vs HTF EMA (evaluate every bar; gate afterward)
+bool cross_up  = ta.crossover(ltf_sig, htf_ema_locked)
+bool cross_dn  = ta.crossunder(ltf_sig, htf_ema_locked)
+bool long_sig  = cross_up  and not na(htf_ema_locked)
+bool short_sig = cross_dn and not na(htf_ema_locked)
+
+// Apply gating (optional)
+bool long_entry  = use_htf_gate ? (long_sig  and htf_trend_up)   : long_sig
+bool short_entry = use_htf_gate ? (short_sig and htf_trend_down) : short_sig
+
+// ----------------------------- Plots
+plot(ltf_sig,          "LTF Signal", linewidth=2)
+plot(htf_ema_locked,   "HTF EMA (locked)", color=color.new(color.blue, 0), linewidth=2)
+plot(htf_ema_raw,      "HTF EMA (raw – may move intrabar)", color=color.new(color.blue, 70))
+
+// Visual confirmation helper
+bgcolor(use_htf_gate and htf_trend_up   ? color.new(color.teal,  90) : na)
+bgcolor(use_htf_gate and htf_trend_down ? color.new(color.red,   90) : na)
+
+// Labels
+if show_labels and long_entry
+    label.new(bar_index, low, "▲ Long", yloc=yloc.belowbar, style=label.style_label_up, textcolor=color.white)
+if show_labels and short_entry
+    label.new(bar_index, high,"▼ Short", yloc=yloc.abovebar, style=label.style_label_down, textcolor=color.white)
+
+// ----------------------------- Alerts
+alertcondition(long_entry,  "TL_LONG_ENTRY",  "Long (MTF safe) — {{ticker}} @ {{close}}")
+alertcondition(short_entry, "TL_SHORT_ENTRY", "Short (MTF safe) — {{ticker}} @ {{close}}")
+
+// ----------------------------- Notes
+// • No repaint: the HTF EMA used for logic (htf_ema_locked) is updated
+//   ONLY when the HTF bar closes (htf_is_confirmed == true).
+// • Keep strategy/entries at bar close for safety; avoid intrabar lookups.
+// • Extend this template by swapping the LTF signal with your own DSP filter.
+// • For strategy(), set process_orders_on_close=true to mirror this behavior.
